@@ -19,7 +19,7 @@ $JellyfinBaseUrl = "http://localhost:$JellyfinPort"
 $ServiceName     = "JellyfinServer"
 
 $script:Korak        = 0
-$script:UkupnoKoraka = 8    # ukupan broj glavnih koraka
+$script:UkupnoKoraka = 7    # ukupan broj glavnih koraka
 
 # ---------------------------------------------------------------------------
 # Pomocne funkcije
@@ -57,160 +57,20 @@ function Write-Upoz   { param([string]$t) Write-Host "     [!!] $t" -ForegroundC
 function Write-Greska { param([string]$t) Write-Host "     [XX] $t" -ForegroundColor Red        }
 function Write-Info   { param([string]$t) Write-Host "          $t" -ForegroundColor Gray       }
 
-function Get-PretpostavkaTipa([string]$ImeMappe) {
-    $n = $ImeMappe.ToLower()
-    if ($n -match "film|movie|kino|cinema|anim|crt|dok|doc") { return "F" }
-    if ($n -match "serij|series|tv|show|emisij|epizod|season") { return "S" }
-    if ($n -match "glazb|music|pjesm|album|audio|sound")       { return "G" }
-    return "M"
-}
-
-function Get-NazivTipa([string]$Kod) {
-    switch ($Kod) {
-        "F" { return "Filmovi"   }
-        "S" { return "Serije"    }
-        "G" { return "Glazba"    }
-        "M" { return "Mjesovito" }
-    }
-}
-
-function Get-JellyfinTip([string]$Kod) {
-    switch ($Kod) {
-        "F" { return "movies"  }
-        "S" { return "tvshows" }
-        "G" { return "music"   }
-        "M" { return "mixed"   }
-    }
-}
 
 # ---------------------------------------------------------------------------
 # Dobrodoslica
 # ---------------------------------------------------------------------------
 Write-Banner
 Write-Host "  Ova skripta ce automatski:" -ForegroundColor White
-Write-Host "    1. Pitati te gdje su mediji i napraviti biblioteke" -ForegroundColor Gray
-Write-Host "    2. Preuzeti i instalirati Jellyfin"                 -ForegroundColor Gray
-Write-Host "    3. Otvoriti browser za postavljanje korisnika"        -ForegroundColor Gray
-Write-Host "    4. Postaviti staticku IP adresu"                    -ForegroundColor Gray
-Write-Host "    5. Dodati ikonu u traku za lako gasenje"            -ForegroundColor Gray
-Write-Host "    6. Otvoriti Jellyfin u browseru"                    -ForegroundColor Gray
+Write-Host "    1. Preuzeti i instalirati Jellyfin"                 -ForegroundColor Gray
+Write-Host "    2. Otvoriti browser za postavljanje korisnika"      -ForegroundColor Gray
+Write-Host "    3. Postaviti staticku IP adresu"                    -ForegroundColor Gray
+Write-Host "    4. Dodati ikonu u traku za lako gasenje"            -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Pritisni Enter za nastavak ili zatvori prozor za odustajanje." -ForegroundColor White
 Read-Host | Out-Null
 
-# ---------------------------------------------------------------------------
-# KORAK 1 - Mapa s medijima + odabir vrsta biblioteka
-# ---------------------------------------------------------------------------
-Write-Banner
-Write-KorakHeader "Odabir mapa s medijima" "1 min"
-Write-Host "  Gdje se nalaze svi tvoji mediji?" -ForegroundColor White
-Write-Host "  (Unesi mapu koja sadrzi podmape Filmovi, Serije, Djeca...)" -ForegroundColor Gray
-Write-Host "  Primjer:  D:\Mediji   ili   E:\   ili   C:\Korisnici\Kova\Videozapisi" -ForegroundColor Cyan
-Write-Host ""
-
-$KorijenMedija = $null
-do {
-    $unos = Read-Host "  Putanja do medija"
-    $kandidat = $unos.Trim().Trim('"').Trim("'")
-    if ([string]::IsNullOrWhiteSpace($kandidat)) {
-        Write-Upoz "Nisi unio nista. Pokusaj ponovo."
-        continue
-    }
-    if (-not (Test-Path $kandidat -PathType Container)) {
-        Write-Greska "Mapa nije pronadena: $kandidat"
-        Write-Info "Provjeri putanju i pokusaj ponovo."
-        Write-Host ""
-        continue
-    }
-    # Upozorenje ako je putanja unutar korisnickog profila - Jellyfin servis mozda nema pristup
-    if ($kandidat -match "^[Cc]:\\[Uu]sers\\") {
-        Write-Host ""
-        Write-Host "  [!!] UPOZORENJE: Mapa je unutar C:\Users\..." -ForegroundColor Yellow
-        Write-Host "       Jellyfin servis (SYSTEM racun) mozda nece moci citati tu mapu." -ForegroundColor Yellow
-        Write-Host "       Preporuka: preseli filmove na D:\Filmovi ili E:\Mediji" -ForegroundColor Yellow
-        Write-Host "       (ako nemas drugi disk, mozes nastaviti ali ce mo popraviti dozvole)" -ForegroundColor Gray
-        Write-Host ""
-        $nastavi = Read-Host "  Nastavi svejedno? [D/N]"
-        if ($nastavi.Trim().ToUpper() -ne "D") { continue }
-
-        # Automatski dodaj SYSTEM dozvole na tu mapu
-        Write-Korak "Dodajem SYSTEM dozvole na mapu..."
-        try {
-            $acl  = Get-Acl $kandidat
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                "SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-            )
-            $acl.SetAccessRule($rule)
-            Set-Acl $kandidat $acl
-            Write-Ok "Dozvole dodane - Jellyfin ce moci citati mapu."
-        } catch {
-            Write-Upoz "Nisam uspio dodati dozvole: $_"
-            Write-Info "Dodaj rucno: desni klik na mapu -> Svojstva -> Sigurnost -> Dodaj SYSTEM s punim pristupom."
-        }
-    }
-    $KorijenMedija = $kandidat
-} while (-not $KorijenMedija)
-
-# Pronadi podmape
-$Podmape = Get-ChildItem -Path $KorijenMedija -Directory -ErrorAction SilentlyContinue
-
-$OdabraneBiblioteke = @()   # array of [Name, Path, JellyfinType]
-
-if ($Podmape.Count -eq 0) {
-    # Nema podmapa - cijela mapa je jedna biblioteka
-    Write-Host ""
-    Write-Ok "Mapa nema podmapa - koristit ce se cijela mapa kao jedna biblioteka."
-    $pp = Get-PretpostavkaTipa (Split-Path $KorijenMedija -Leaf)
-    Write-Host ""
-    Write-Host "  Koja je vrsta sadrzaja u mapi '$KorijenMedija'?" -ForegroundColor White
-    Write-Host "  F = Filmovi  |  S = Serije  |  G = Glazba  |  M = Mjesovito" -ForegroundColor Gray
-    do {
-        $unos = Read-Host "  Odabir [F/S/G/M, Enter = $(Get-NazivTipa $pp)]"
-        $unos = $unos.Trim().ToUpper()
-        if ([string]::IsNullOrEmpty($unos)) { $unos = $pp }
-    } while ($unos -notin @("F","S","G","M"))
-    $OdabraneBiblioteke += @{ Naziv = (Split-Path $KorijenMedija -Leaf); Putanja = $KorijenMedija; Tip = $unos }
-} else {
-    Write-Host ""
-    Write-Ok "Pronasao sam $($Podmape.Count) mapa(e) unutar '$KorijenMedija':"
-    Write-Host ""
-    Write-Host "  F = Filmovi  |  S = Serije  |  G = Glazba  |  M = Mjesovito  |  P = Preskoci" -ForegroundColor Gray
-    Write-Host ""
-
-    foreach ($mapa in $Podmape) {
-        $pp = Get-PretpostavkaTipa $mapa.Name
-        $zadano = Get-NazivTipa $pp
-        do {
-            $unos = Read-Host "  Mapa `"$($mapa.Name)`"  [F/S/G/M/P, Enter = $zadano]"
-            $unos = $unos.Trim().ToUpper()
-            if ([string]::IsNullOrEmpty($unos)) { $unos = $pp }
-        } while ($unos -notin @("F","S","G","M","P"))
-
-        if ($unos -eq "P") {
-            Write-Info "  --> Preskoceno."
-        } else {
-            $OdabraneBiblioteke += @{ Naziv = $mapa.Name; Putanja = $mapa.FullName; Tip = $unos }
-            Write-Info "  --> $(Get-NazivTipa $unos)"
-        }
-    }
-}
-
-if ($OdabraneBiblioteke.Count -eq 0) {
-    Write-Greska "Nisi odabrao nijednu biblioteku. Pokrenite skriptu iznova."
-    pause; exit 1
-}
-
-Write-Host ""
-Write-Host "  Biblioteke koje ce biti stvorene:" -ForegroundColor White
-foreach ($b in $OdabraneBiblioteke) {
-    Write-Host "    * $($b.Naziv)  ->  $(Get-NazivTipa $b.Tip)  ($($b.Putanja))" -ForegroundColor Cyan
-}
-Write-Host ""
-$potvrda = Read-Host "  Je li ovo ispravno? [D/N]"
-if ($potvrda.Trim().ToUpper() -ne "D") {
-    Write-Host "  Pokrenite skriptu iznova i napravite ispravne odabire." -ForegroundColor Yellow
-    pause; exit 0
-}
 
 # ---------------------------------------------------------------------------
 # KORAK 2 - Preuzimanje Jellyfin instalacijskog paketa
@@ -409,13 +269,7 @@ Write-Host "  Browser ce se otvoriti. Popuni korake u carobnjaku:" -ForegroundCo
 Write-Host ""
 Write-Host "  Korak 1 - Jezik:    odaberi jezik" -ForegroundColor Cyan
 Write-Host "  Korak 2 - Korisnik: unesi ime i lozinku po svom izboru" -ForegroundColor Cyan
-Write-Host "  Korak 3 - Mediji:   klikni 'Dodaj medijsku biblioteku' za svaku mapu:" -ForegroundColor Cyan
-Write-Host ""
-foreach ($b in $OdabraneBiblioteke) {
-    Write-Host "    Naziv: $($b.Naziv)  |  Vrsta: $(Get-NazivTipa $b.Tip)" -ForegroundColor White
-    Write-Host "    Putanja: $($b.Putanja)" -ForegroundColor Yellow
-    Write-Host ""
-}
+Write-Host "  Korak 3 - Mediji:   dodaj mape s filmovima/serijama (klikni 'Dodaj medijsku biblioteku')" -ForegroundColor Cyan
 Write-Host "  Korak 4 - Metapodaci: ostavi zadano, klikni Dalje" -ForegroundColor Cyan
 Write-Host "  Korak 5 - Zavrsi:   klikni 'Zavrsi'" -ForegroundColor Cyan
 Write-Host ""
@@ -589,11 +443,6 @@ if ($LocalIP) {
     Write-Host ""
     Write-Host "  --> Instaliraj Jellyfin aplikaciju na TV-u i upisi gornju adresu" -ForegroundColor Yellow
     Write-Host "      kada te pita za adresu servera." -ForegroundColor Yellow
-}
-Write-Host ""
-Write-Host "  Kreirane biblioteke:" -ForegroundColor White
-foreach ($b in $OdabraneBiblioteke) {
-    Write-Host "    * $($b.Naziv)  ($(Get-NazivTipa $b.Tip))" -ForegroundColor Cyan
 }
 Write-Host ""
 Write-Host "  Sljedeci put kada zelis gledati" -ForegroundColor White
